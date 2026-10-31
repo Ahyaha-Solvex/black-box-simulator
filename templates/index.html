@@ -1,0 +1,1434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SolveX Blackbox Telemetry Controller</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root {
+      --bg-base: #090d12;
+      --bg-card: #121820;
+      --border-subtle: #1e293b;
+      --accent-amber: #f59e0b;
+      --accent-cyan: #06b6d4;
+      --accent-rose: #f43f5e;
+      --accent-emerald: #10b981;
+    }
+    body {
+      background-color: var(--bg-base);
+      color: #f1f5f9;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    .font-mono-num {
+      font-family: ui-monospace, 'SF Mono', Menlo, Monaco, Consolas, monospace;
+      font-feature-settings: "tnum" 1;
+    }
+    .card-panel {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+    }
+    /* Pulsing alert glow */
+    @keyframes alertGlow {
+      0%, 100% { box-shadow: 0 0 15px rgba(244, 63, 94, 0.4); }
+      50% { box-shadow: 0 0 30px rgba(244, 63, 94, 0.85); }
+    }
+    .crash-alert-active {
+      animation: alertGlow 1.5s infinite;
+      border-color: #f43f5e !important;
+    }
+    /* Custom scrollbars */
+    ::-webkit-scrollbar {
+      width: 5px;
+      height: 5px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #090d12;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #273549;
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #3b4e69;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col antialiased selection:bg-amber-500 selection:text-black">
+
+  <!-- Top System Bar -->
+  <header class="border-b border-slate-800 bg-[#0d131a] px-6 py-3.5 flex flex-wrap items-center justify-between gap-4">
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 rounded bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 font-bold text-sm tracking-wide">
+        SX
+      </div>
+      <div>
+        <h1 class="text-base font-semibold tracking-tight text-white flex items-center gap-2">
+          SolveX Blackbox Telemetry Controller
+          <span class="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-normal border border-slate-700">Scenario Injector</span>
+        </h1>
+        <p class="text-xs text-slate-400">100 Hz IMU batches · MQTT Publish · ws://10.24.211.68:8000 Relay · MongoDB 3s</p>
+      </div>
+    </div>
+
+    <!-- Live Pipeline Indicators -->
+    <div class="flex items-center gap-3 text-xs">
+      <!-- MQTT -->
+      <div class="flex items-center gap-2 px-3 py-1.5 rounded card-panel">
+        <span id="badge-mqtt-dot" class="w-2 h-2 rounded-full bg-slate-500"></span>
+        <span class="text-slate-400">MQTT:</span>
+        <span id="badge-mqtt-text" class="font-mono-num font-medium text-slate-200">Connecting...</span>
+      </div>
+
+      <!-- Remote WebSocket -->
+      <div class="flex items-center gap-2 px-3 py-1.5 rounded card-panel">
+        <span id="badge-ws-dot" class="w-2 h-2 rounded-full bg-slate-500"></span>
+        <span class="text-slate-400">Target WS (Zino):</span>
+        <span id="badge-ws-text" class="font-mono-num font-medium text-slate-200">10.24.211.68:8000</span>
+      </div>
+
+      <!-- MongoDB -->
+      <div class="flex items-center gap-2 px-3 py-1.5 rounded card-panel">
+        <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+        <span class="text-slate-400">MongoDB:</span>
+        <span id="badge-mongo-count" class="font-mono-num font-medium text-emerald-400">-- batches</span>
+      </div>
+
+      <!-- Box Hardware Health Badge -->
+      <a href="/box/health" target="_blank" id="badge-hw-link" class="flex items-center gap-2 px-3 py-1.5 rounded card-panel hover:border-slate-600 transition-colors" title="Click to view live Hardware Status JSON (/box/health)">
+        <span id="badge-hw-dot" class="w-2 h-2 rounded-full bg-emerald-500"></span>
+        <span class="text-slate-400">Box HW:</span>
+        <span id="badge-hw-text" class="font-mono-num font-medium text-emerald-400">HEALTHY</span>
+      </a>
+
+      <!-- Active Uplink Ladder Badge -->
+      <div id="badge-uplink" class="flex items-center gap-2 px-3 py-1.5 rounded card-panel">
+        <span id="badge-uplink-dot" class="w-2 h-2 rounded-full bg-emerald-500"></span>
+        <span class="text-slate-400">Uplink:</span>
+        <span id="badge-uplink-text" class="font-mono-num font-medium text-emerald-400">4G Internet</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Layout -->
+  <main class="flex-1 p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 max-w-[1750px] w-full mx-auto">
+
+    <!-- Column 1: Scenarios Selector (3 cols) -->
+    <section class="lg:col-span-3 flex flex-col gap-4">
+      <div class="flex items-center justify-between">
+        <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-2">
+          <span>Data Scenarios</span>
+          <span class="text-[10px] text-slate-500 font-mono-num">from remote repo</span>
+        </h2>
+        <span id="scenario-count" class="text-xs font-mono-num px-1.5 py-0.5 bg-slate-800 text-slate-300 rounded border border-slate-700">0 found</span>
+      </div>
+
+      <!-- Scenario Cards Container -->
+      <div id="scenarios-list" class="space-y-3 overflow-y-auto max-h-[calc(100vh-250px)] pr-1">
+        <div class="p-4 rounded card-panel animate-pulse text-slate-500 text-sm">
+          Loading scenarios from scenarios/ folder...
+        </div>
+      </div>
+
+      <!-- Scenario Quick Info Card -->
+      <div class="card-panel rounded p-4 text-xs space-y-2 mt-auto">
+        <div class="text-slate-400 font-medium flex items-center justify-between">
+          <span>Selected Scenario Info</span>
+          <span id="info-category-tag" class="text-[10px] uppercase font-bold text-slate-400 px-1.5 py-0.5 rounded bg-slate-800">Normal</span>
+        </div>
+        <p id="info-description" class="text-slate-300 text-[11px] leading-relaxed">Select a scenario above to view dynamics profile and collision signatures.</p>
+        <div class="grid grid-cols-2 gap-2 text-slate-300 pt-2 border-t border-slate-800/80">
+          <div>Duration: <span id="info-duration" class="font-mono-num text-white">--</span></div>
+          <div>Peak Accel: <span id="info-peak" class="font-mono-num text-white">--</span></div>
+          <div>Speed Range: <span id="info-speed" class="font-mono-num text-white">--</span></div>
+          <div>IMU Rate: <span id="info-samples" class="font-mono-num text-cyan-400">100 Hz</span></div>
+        </div>
+      </div>
+    </section>
+
+
+    <!-- Column 2: Cockpit, AI Alert & Oscilloscopes (6 cols) -->
+    <section class="lg:col-span-6 flex flex-col gap-4">
+
+      <!-- Dedicated Remote AI Prediction Banner (Model M2) -->
+      <div id="ai-prediction-panel" class="card-panel rounded p-4 transition-all duration-300">
+        <!-- Idle State -->
+        <div id="pred-idle-view" class="flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400 text-xs font-mono font-bold">
+              M2
+            </div>
+            <div>
+              <div class="text-xs font-semibold text-white flex items-center gap-2">
+                Remote ML Crash Model (M2)
+                <span class="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping"></span>
+              </div>
+              <div class="text-[11px] text-slate-400">Listening on ws://10.24.211.68:8000/ws/telemetry · Trigger: |a_xy| > 1.0g (8s pre/post window)</div>
+            </div>
+          </div>
+          <div class="text-right">
+            <span class="text-[10px] font-mono-num uppercase px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">Standby</span>
+          </div>
+        </div>
+
+        <!-- Active Result State (Hidden by default) -->
+        <div id="pred-result-view" class="hidden">
+          <div class="flex items-start justify-between mb-3">
+            <div class="flex items-center gap-3">
+              <div id="pred-badge-icon" class="w-10 h-10 rounded flex items-center justify-center text-lg font-bold">
+                ⚠️
+              </div>
+              <div>
+                <div class="flex items-center gap-2">
+                  <h3 id="pred-title" class="text-base font-bold tracking-tight">CRASH DETECTED</h3>
+                  <span id="pred-model-tag" class="text-[10px] font-mono-num px-2 py-0.5 rounded uppercase font-semibold">Model M2</span>
+                </div>
+                <p id="pred-subtitle" class="text-xs text-slate-300">Ensemble evaluation scored by remote crash response server</p>
+              </div>
+            </div>
+            <div class="text-right">
+              <div class="text-xs text-slate-400">Crash Probability</div>
+              <div id="pred-p-crash" class="text-2xl font-bold font-mono-num text-rose-400">99.9%</div>
+            </div>
+          </div>
+
+          <!-- Prediction Metrics Bar -->
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 border-t border-slate-800 text-xs font-mono-num">
+            <div class="bg-slate-900/60 p-2 rounded">
+              <span class="text-slate-400 block text-[10px]">LightGBM Score:</span>
+              <span id="pred-p-lgbm" class="text-white font-semibold">--</span>
+            </div>
+            <div class="bg-slate-900/60 p-2 rounded">
+              <span class="text-slate-400 block text-[10px]">1D-CNN Score:</span>
+              <span id="pred-p-cnn" class="text-white font-semibold">--</span>
+            </div>
+            <div class="bg-slate-900/60 p-2 rounded">
+              <span class="text-slate-400 block text-[10px]">Inference Latency:</span>
+              <span id="pred-latency" class="text-cyan-400 font-semibold">-- ms</span>
+            </div>
+            <div class="bg-slate-900/60 p-2 rounded">
+              <span class="text-slate-400 block text-[10px]">Trigger Sequence:</span>
+              <span id="pred-trigger-seq" class="text-amber-400 font-semibold">--</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Metrics HUD Header -->
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <!-- Speed Gauge -->
+        <div class="card-panel rounded p-3.5">
+          <div class="text-[11px] text-slate-400 mb-1">GPS Speed</div>
+          <div class="flex items-baseline gap-1.5">
+            <span id="hud-speed" class="text-3xl font-bold font-mono-num text-white">0.0</span>
+            <span class="text-xs text-slate-400">km/h</span>
+          </div>
+          <div class="w-full bg-slate-800 h-1.5 rounded-full mt-2 overflow-hidden">
+            <div id="hud-speed-bar" class="bg-amber-400 h-full w-0 transition-all duration-300"></div>
+          </div>
+        </div>
+
+        <!-- Peak G -->
+        <div class="card-panel rounded p-3.5">
+          <div class="text-[11px] text-slate-400 mb-1">Impact Magnitude</div>
+          <div class="flex items-baseline gap-1.5">
+            <span id="hud-gforce" class="text-3xl font-bold font-mono-num text-white">1.00</span>
+            <span class="text-xs text-slate-400">g</span>
+          </div>
+          <div id="hud-impact-tag" class="text-[10px] uppercase font-bold text-slate-500 mt-2 truncate">Nominal Baseline</div>
+        </div>
+
+        <!-- Sequence Counter -->
+        <div class="card-panel rounded p-3.5">
+          <div class="text-[11px] text-slate-400 mb-1">Seq Counter</div>
+          <div class="flex items-baseline gap-1.5">
+            <span id="hud-seq" class="text-3xl font-bold font-mono-num text-cyan-400">#0</span>
+          </div>
+          <div class="text-[10px] text-slate-500 mt-2">1 msg = 100 rows</div>
+        </div>
+
+        <!-- Timeline Progress -->
+        <div class="card-panel rounded p-3.5">
+          <div class="text-[11px] text-slate-400 mb-1">Sequence Phase</div>
+          <div class="flex items-baseline gap-1">
+            <span id="hud-curr-sec" class="text-3xl font-bold font-mono-num text-white">00</span>
+            <span class="text-sm font-mono-num text-slate-500">/</span>
+            <span id="hud-total-sec" class="text-lg font-mono-num text-slate-400">16</span>
+            <span class="text-xs text-slate-400 ml-1">sec</span>
+          </div>
+          <div class="text-[10px] text-amber-400 font-medium mt-2 truncate" id="hud-phase-text">Standby</div>
+        </div>
+      </div>
+
+      <!-- Waveform Oscilloscopes Container -->
+      <div class="card-panel rounded p-4 flex-1 flex flex-col gap-4">
+
+        <!-- Upper: Accelerometer Waveform (100 Hz in g) -->
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <div class="text-xs font-semibold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+              <span>Accelerometer (100 rows · g)</span>
+            </div>
+            <div class="flex items-center gap-3 text-[11px] font-mono-num">
+              <span class="flex items-center gap-1 text-rose-400"><span class="w-2.5 h-0.5 bg-rose-500 inline-block"></span> Ax</span>
+              <span class="flex items-center gap-1 text-emerald-400"><span class="w-2.5 h-0.5 bg-emerald-500 inline-block"></span> Ay</span>
+              <span class="flex items-center gap-1 text-blue-400"><span class="w-2.5 h-0.5 bg-blue-500 inline-block"></span> Az</span>
+            </div>
+          </div>
+          <div class="bg-[#080c10] border border-slate-800 rounded relative overflow-hidden h-36">
+            <canvas id="canvas-acc" class="w-full h-full block"></canvas>
+            <div class="absolute right-2 top-2 text-[10px] font-mono-num text-slate-500 pointer-events-none">±3.5g Scale</div>
+          </div>
+        </div>
+
+        <!-- Lower: Gyroscope Waveform (100 Hz in deg/s) -->
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <div class="text-xs font-semibold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+              <span>Gyroscope (100 rows · deg/s)</span>
+            </div>
+            <div class="flex items-center gap-3 text-[11px] font-mono-num">
+              <span class="flex items-center gap-1 text-cyan-400"><span class="w-2.5 h-0.5 bg-cyan-500 inline-block"></span> Gx</span>
+              <span class="flex items-center gap-1 text-purple-400"><span class="w-2.5 h-0.5 bg-purple-500 inline-block"></span> Gy</span>
+              <span class="flex items-center gap-1 text-amber-400"><span class="w-2.5 h-0.5 bg-amber-500 inline-block"></span> Gz</span>
+            </div>
+          </div>
+          <div class="bg-[#080c10] border border-slate-800 rounded relative overflow-hidden h-36">
+            <canvas id="canvas-gyro" class="w-full h-full block"></canvas>
+            <div class="absolute right-2 top-2 text-[10px] font-mono-num text-slate-500 pointer-events-none">±150°/s Scale</div>
+          </div>
+        </div>
+
+        <!-- Interactive Progress Scrubber -->
+        <div class="space-y-1.5 pt-2 border-t border-slate-800/80">
+          <div class="flex justify-between text-[11px] text-slate-400 font-mono-num">
+            <span>Overall Progress: <span id="scrubber-label">0s / 16s</span></span>
+            <span id="scrubber-status" class="text-slate-300 font-medium">Ready</span>
+          </div>
+          <div class="relative w-full bg-slate-800 h-2 rounded cursor-pointer overflow-hidden" id="progress-container">
+            <div id="progress-bar" class="bg-amber-500 h-full rounded w-0 transition-all duration-150"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Player Control Deck -->
+      <div class="card-panel rounded p-4 flex flex-col gap-3">
+        <!-- Main Actions Row -->
+        <div class="flex flex-wrap items-center justify-between gap-4">
+          <div class="flex items-center gap-2">
+            <!-- Play / Pause -->
+            <button id="btn-play" class="px-5 py-2.5 rounded font-semibold text-sm bg-amber-500 hover:bg-amber-400 text-black flex items-center gap-2 transition-colors">
+              <svg id="icon-play" class="w-4 h-4 fill-current" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              <svg id="icon-pause" class="w-4 h-4 fill-current hidden" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+              <span id="text-play">Send Scenario</span>
+            </button>
+
+            <!-- Step 1s -->
+            <button id="btn-step" class="px-3.5 py-2.5 rounded font-medium text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center gap-1.5 transition-colors">
+              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+              <span>Step 1s</span>
+            </button>
+
+            <!-- Stop / Reset -->
+            <button id="btn-stop" class="px-3.5 py-2.5 rounded font-medium text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center gap-1.5 transition-colors">
+              <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16"/></svg>
+              <span>Reset</span>
+            </button>
+          </div>
+
+          <!-- Speed & Device Options -->
+          <div class="flex items-center gap-3 text-xs">
+            <!-- Speed Multiplier -->
+            <div class="flex items-center gap-1 bg-slate-800/80 p-1 rounded border border-slate-700">
+              <button class="px-2 py-1 rounded text-slate-300 hover:text-white btn-speed" data-speed="0.5">0.5x</button>
+              <button class="px-2 py-1 rounded bg-amber-500/20 text-amber-400 font-semibold btn-speed" data-speed="1.0">1.0x</button>
+              <button class="px-2 py-1 rounded text-slate-300 hover:text-white btn-speed" data-speed="2.0">2.0x</button>
+              <button class="px-2 py-1 rounded text-slate-300 hover:text-white btn-speed" data-speed="10.0">Fast</button>
+            </div>
+
+            <!-- Device ID -->
+            <div class="flex items-center gap-1.5">
+              <span class="text-slate-400">Device:</span>
+              <input type="text" id="inp-device" value="blackbox-01" class="w-24 bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono-num text-xs text-white">
+            </div>
+          </div>
+        </div>
+
+        <!-- Options Row: Lead-in & Loop -->
+        <div class="flex flex-wrap items-center justify-between pt-2 border-t border-slate-800/80 text-xs">
+          <!-- Prepend Lead-in Normal Driving Checkbox -->
+          <label class="flex items-center gap-2 cursor-pointer text-slate-200" title="The remote M2 model requires 8s of normal driving before impact to score the window accurately.">
+            <input type="checkbox" id="chk-leadin" checked class="rounded bg-slate-800 border-slate-700 text-amber-500 focus:ring-0">
+            <span class="font-medium text-amber-300">Prepend 10s Lead-In Normal Driving</span>
+            <span class="text-slate-400 text-[11px]">(Required for remote M2 8s pre-crash window)</span>
+          </label>
+
+          <!-- Loop Toggle -->
+          <label class="flex items-center gap-2 cursor-pointer text-slate-300">
+            <input type="checkbox" id="chk-loop" class="rounded bg-slate-800 border-slate-700 text-amber-500 focus:ring-0">
+            <span>Loop Scenario</span>
+          </label>
+        </div>
+      </div>
+    </section>
+
+
+    <!-- Column 3: Live Wire Transmission & Emergency Fallback Center (3 cols) -->
+    <section class="lg:col-span-3 flex flex-col gap-4">
+
+      <!-- Emergency Uplink Ladder & Fallback Simulation Deck -->
+      <div class="card-panel rounded p-3 flex flex-col gap-2.5">
+        <div class="flex items-center justify-between pb-1.5 border-b border-slate-800">
+          <div class="flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-cyan-400"></span>
+            <h2 class="text-xs font-semibold uppercase tracking-wider text-white">Emergency Uplink Ladder</h2>
+          </div>
+          <span id="deck-tier-badge" class="text-[9px] font-mono-num font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+            TIER 1 · 4G INTERNET
+          </span>
+        </div>
+
+        <!-- 3-Tier Network Channel Switches -->
+        <div class="grid grid-cols-3 gap-1.5 text-[11px] font-mono-num">
+          <!-- Tier 1: 4G Internet -->
+          <button id="toggle-net-internet" class="p-2 rounded border border-emerald-500/50 bg-emerald-950/20 text-emerald-300 text-left transition-all">
+            <div class="text-[9px] text-slate-400 uppercase">Tier 1: 4G LTE</div>
+            <div class="font-bold flex items-center justify-between mt-0.5">
+              <span>Internet</span>
+              <span id="status-internet" class="text-[10px] text-emerald-400">ON</span>
+            </div>
+          </button>
+
+          <!-- Tier 2: GSM 2G SMS -->
+          <button id="toggle-net-gsm" class="p-2 rounded border border-slate-700 bg-slate-900/60 text-slate-300 text-left transition-all">
+            <div class="text-[9px] text-slate-400 uppercase">Tier 2: 2G GSM</div>
+            <div class="font-bold flex items-center justify-between mt-0.5">
+              <span>SMS MSD</span>
+              <span id="status-gsm" class="text-[10px] text-amber-400">READY</span>
+            </div>
+          </button>
+
+          <!-- Tier 3: LoRaWAN 868MHz -->
+          <button id="toggle-net-lora" class="p-2 rounded border border-slate-700 bg-slate-900/60 text-slate-300 text-left transition-all">
+            <div class="text-[9px] text-slate-400 uppercase">Tier 3: LPWAN</div>
+            <div class="font-bold flex items-center justify-between mt-0.5">
+              <span>LoRaWAN</span>
+              <span id="status-lora" class="text-[10px] text-purple-400">READY</span>
+            </div>
+          </button>
+        </div>
+
+        <!-- 1-Click Simulation Scenario Presets -->
+        <div class="flex items-center gap-1.5 pt-1">
+          <button id="sim-btn-cut-internet" class="flex-1 py-1 px-1.5 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-medium transition-colors" title="Cut cellular internet to trigger Tier 2 GSM 2G SMS">
+            📶 Cut 4G &rarr; SMS
+          </button>
+          <button id="sim-btn-cut-cellular" class="flex-1 py-1 px-1.5 rounded bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[10px] font-medium transition-colors" title="Cut both internet and GSM to trigger Tier 3 LoRaWAN 868MHz">
+            🏔️ Dead Zone &rarr; LoRa
+          </button>
+          <button id="sim-btn-restore" class="py-1 px-2 rounded bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-medium transition-colors" title="Restore primary 4G Internet connection">
+            🔄 Restore
+          </button>
+        </div>
+
+        <!-- Manual Dispatch Actions -->
+        <div class="flex items-center gap-1.5 pt-1 border-t border-slate-800/80">
+          <button id="btn-manual-sms" class="flex-1 py-1 px-2 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-[10px] font-medium transition-colors flex items-center justify-center gap-1">
+            <span>📩 Test SMS</span>
+          </button>
+          <button id="btn-manual-lora" class="flex-1 py-1 px-2 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-[10px] font-medium transition-colors flex items-center justify-center gap-1">
+            <span>📡 Test LoRa</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Tabbed Wire & Fallback Feeds -->
+      <div class="card-panel rounded p-3 flex-1 flex flex-col font-mono-num text-xs text-slate-300 overflow-hidden min-h-[340px]">
+        <!-- Tabs Header -->
+        <div class="flex items-center justify-between pb-2 border-b border-slate-800 text-[11px]">
+          <div class="flex items-center gap-2">
+            <button id="tab-btn-wire" class="px-2.5 py-1 rounded bg-slate-800 text-amber-400 font-semibold border border-slate-700">
+              Primary JSON
+            </button>
+            <button id="tab-btn-fallback" class="px-2.5 py-1 rounded text-slate-400 hover:text-white border border-transparent">
+              Emergency Feed <span id="fallback-badge-count" class="ml-1 px-1 py-0.2 rounded text-[9px] bg-slate-800 text-slate-300">0</span>
+            </button>
+          </div>
+          <button id="btn-copy-json" class="hover:text-amber-400 text-slate-400 transition-colors">Copy</button>
+        </div>
+
+        <!-- View 1: Outbound 100 Hz JSON Viewer -->
+        <pre id="json-viewer" class="mt-2 flex-1 overflow-auto text-[11px] leading-relaxed text-slate-300 selection:bg-slate-700">
+{
+  "type": "telemetry",
+  "device_id": "blackbox-01",
+  "seq": 0,
+  "recorded_at": "waiting...",
+  "location": { "lat": 36.3741, "lon": 3.9012 },
+  "acc": [ 100 rows in g ],
+  "gyro": [ 100 rows in deg/s ],
+  "gps_speed_kmh": 0.0
+}
+        </pre>
+
+        <!-- View 2: Live Emergency Fallback Event Feed (SMS & LoRaWAN) -->
+        <div id="fallback-feed-view" class="mt-2 flex-1 overflow-y-auto space-y-2 text-[11px] pr-1 hidden">
+          <div class="text-slate-500 text-center py-6">
+            Waiting for emergency fallback events (cut 4G to simulate SMS / LoRaWAN)...
+          </div>
+        </div>
+      </div>
+
+      <!-- Transmission Event Feed (Activity Stream) -->
+      <div class="card-panel rounded p-3 h-48 flex flex-col text-xs">
+        <div class="text-[11px] text-slate-400 font-medium mb-1.5 flex justify-between items-center">
+          <span>Activity Stream & Uplink Handoffs</span>
+          <span id="tx-count" class="font-mono-num text-slate-500">0 events</span>
+        </div>
+        <div id="tx-log" class="flex-1 overflow-y-auto space-y-1.5 font-mono-num text-[11px] pr-1">
+          <div class="text-slate-500 text-center py-4">Waiting for scenario start...</div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Client Logic -->
+  <script>
+    // State
+    let scenarios = [];
+    let selectedScenario = null;
+    let playerStatus = {
+      is_playing: false,
+      is_paused: false,
+      current_index: 0,
+      total_steps: 16,
+      seq: 0,
+      phase: 'idle'
+    };
+    let currentSpeedMultiplier = 1.0;
+    let localWs = null;
+    let latestTelemetry = null;
+    let lastPrediction = null;
+
+    // Canvas contexts
+    const canvasAcc = document.getElementById('canvas-acc');
+    const ctxAcc = canvasAcc.getContext('2d');
+    const canvasGyro = document.getElementById('canvas-gyro');
+    const ctxGyro = canvasGyro.getContext('2d');
+
+    // Resize canvas
+    function resizeCanvases() {
+      const rectA = canvasAcc.getBoundingClientRect();
+      canvasAcc.width = rectA.width * window.devicePixelRatio;
+      canvasAcc.height = rectA.height * window.devicePixelRatio;
+      ctxAcc.scale(window.devicePixelRatio, window.devicePixelRatio);
+
+      const rectG = canvasGyro.getBoundingClientRect();
+      canvasGyro.width = rectG.width * window.devicePixelRatio;
+      canvasGyro.height = rectG.height * window.devicePixelRatio;
+      ctxGyro.scale(window.devicePixelRatio, window.devicePixelRatio);
+
+      if (latestTelemetry) drawWaveforms(latestTelemetry);
+    }
+    window.addEventListener('resize', resizeCanvases);
+
+    // Fetch available scenarios from server
+    async function loadScenarios() {
+      try {
+        const res = await fetch('/api/scenarios');
+        scenarios = await res.json();
+        document.getElementById('scenario-count').textContent = `${scenarios.length} available`;
+        renderScenarioCards();
+        if (scenarios.length > 0 && !selectedScenario) {
+          // Default select crash.json if present
+          const crashSc = scenarios.find(s => s.filename.includes('crash') && !s.filename.includes('no_crash'));
+          selectScenario(crashSc ? crashSc.filename : scenarios[0].filename);
+        }
+      } catch (e) {
+        console.error('Failed to load scenarios:', e);
+      }
+    }
+
+    // Render Scenario selection cards
+    function renderScenarioCards() {
+      const container = document.getElementById('scenarios-list');
+      container.innerHTML = '';
+
+      scenarios.forEach(sc => {
+        const isSelected = selectedScenario && selectedScenario.filename === sc.filename;
+        const card = document.createElement('div');
+        card.className = `p-3 rounded card-panel cursor-pointer transition-all border ${
+          isSelected ? 'border-amber-500 bg-amber-500/5' : 'hover:border-slate-700 hover:bg-slate-800/40'
+        }`;
+
+        let tagColor = 'bg-slate-800 text-slate-300';
+        let tagName = 'CRUISE';
+        if (sc.category === 'crash') {
+          tagColor = 'bg-rose-500/20 text-rose-400 border border-rose-500/30';
+          tagName = 'CRASH IMPACT';
+        } else if (sc.category === 'jolt') {
+          tagColor = 'bg-amber-500/20 text-amber-400 border border-amber-500/30';
+          tagName = 'JOLT / BUMP';
+        } else {
+          tagColor = 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+          tagName = 'NORMAL DRIVING';
+        }
+
+        card.innerHTML = `
+          <div class="flex items-start justify-between gap-2 mb-1">
+            <span class="font-semibold text-sm text-white">${sc.name}</span>
+            <span class="text-[9px] font-bold px-1.5 py-0.5 rounded ${tagColor}">${tagName}</span>
+          </div>
+          <div class="text-[11px] text-slate-400 line-clamp-2 mb-2 leading-tight">${sc.description}</div>
+          <div class="flex items-center justify-between text-[11px] font-mono-num text-slate-400 pt-1.5 border-t border-slate-800">
+            <span>Peak: <strong class="${sc.peak_g > 3 ? 'text-rose-400' : 'text-slate-200'}">${sc.peak_g}g</strong></span>
+            <span>Speed: <strong>${sc.min_speed}-${sc.max_speed}</strong> km/h</span>
+            <span>${sc.total_seconds}s</span>
+          </div>
+        `;
+
+        card.onclick = () => selectScenario(sc.filename);
+        container.appendChild(card);
+      });
+    }
+
+    function selectScenario(filename) {
+      selectedScenario = scenarios.find(s => s.filename === filename);
+      renderScenarioCards();
+      if (selectedScenario) {
+        document.getElementById('info-duration').textContent = `${selectedScenario.total_seconds}s event`;
+        document.getElementById('info-peak').textContent = `${selectedScenario.peak_g}g`;
+        document.getElementById('info-speed').textContent = `${selectedScenario.min_speed} - ${selectedScenario.max_speed} km/h`;
+        document.getElementById('info-description').textContent = selectedScenario.description;
+
+        const tagEl = document.getElementById('info-category-tag');
+        tagEl.textContent = selectedScenario.category.toUpperCase();
+        if (selectedScenario.category === 'crash') {
+          tagEl.className = 'text-[10px] uppercase font-bold text-rose-400 px-1.5 py-0.5 rounded bg-rose-500/10 border border-rose-500/30';
+        } else if (selectedScenario.category === 'jolt') {
+          tagEl.className = 'text-[10px] uppercase font-bold text-amber-400 px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/30';
+        } else {
+          tagEl.className = 'text-[10px] uppercase font-bold text-emerald-400 px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30';
+        }
+
+        document.getElementById('hud-total-sec').textContent = selectedScenario.total_seconds;
+        updateScrubber(0, selectedScenario.total_seconds, 'idle', 0, selectedScenario.total_seconds);
+      }
+    }
+
+    // Connect Local WebSocket to stream live telemetry updates & incoming M2 predictions
+    function connectLocalWebSocket() {
+      const loc = window.location;
+      const wsUri = (loc.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + loc.host + '/ws/telemetry';
+      localWs = new WebSocket(wsUri);
+
+      localWs.onopen = () => {
+        console.log('[WebSocket] Connected to local FastAPI hub');
+      };
+
+      localWs.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'telemetry') {
+            onTelemetryReceived(data);
+          } else if (data.type === 'prediction') {
+            onPredictionReceived(data);
+          } else if (data.type === 'error') {
+            onRemoteErrorReceived(data);
+          } else if (data.type === 'fallback_event') {
+            onFallbackEventReceived(data);
+          } else if (data.type === 'inbound_sms') {
+            onInboundSmsReceived(data);
+          } else if (data.type === 'inbound_lorawan') {
+            onInboundLorawanReceived(data);
+          } else if (data.type === 'network_state_change') {
+            onNetworkStateChanged(data);
+          }
+        } catch (e) {
+          console.error('Error handling WS message:', e);
+        }
+      };
+
+      localWs.onclose = () => {
+        setTimeout(connectLocalWebSocket, 2000);
+      };
+    }
+
+    // Handle telemetry packet arrival
+    function onTelemetryReceived(data) {
+      latestTelemetry = data;
+
+      // Update HUD
+      const speed = data.gps_speed_kmh !== null && data.gps_speed_kmh !== undefined ? data.gps_speed_kmh : 0.0;
+      document.getElementById('hud-speed').textContent = speed.toFixed(1);
+      const speedPct = Math.min(100, (speed / 120.0) * 100);
+      document.getElementById('hud-speed-bar').style.width = `${speedPct}%`;
+
+      document.getElementById('hud-seq').textContent = `#${data.seq || 0}`;
+
+      // Calculate max g-force from current 100 samples
+      let maxG = 1.0;
+      if (data.acc && data.acc.length > 0) {
+        data.acc.forEach(([x, y, z]) => {
+          const m = Math.sqrt(x*x + y*y + z*z);
+          if (m > maxG) maxG = m;
+        });
+      }
+      document.getElementById('hud-gforce').textContent = maxG.toFixed(2);
+      const impactTag = document.getElementById('hud-impact-tag');
+      if (maxG > 3.0) {
+        impactTag.textContent = 'HIGH IMPACT EVENT';
+        impactTag.className = 'text-[10px] uppercase font-bold text-rose-400 animate-pulse mt-2 truncate';
+      } else if (maxG > 1.0) {
+        impactTag.textContent = 'TRIGGER ACTIVE (|a|>1g)';
+        impactTag.className = 'text-[10px] uppercase font-bold text-amber-400 mt-2 truncate';
+      } else {
+        impactTag.textContent = 'Nominal Baseline';
+        impactTag.className = 'text-[10px] uppercase font-bold text-slate-500 mt-2 truncate';
+      }
+
+      // Draw Waveforms
+      drawWaveforms(data);
+
+      // Update JSON viewer
+      const snippet = {
+        type: data.type,
+        device_id: data.device_id,
+        seq: data.seq,
+        recorded_at: data.recorded_at,
+        location: data.location,
+        acc: `[ ${data.acc ? data.acc.length : 0} rows of (x,y,z) in g ]`,
+        gyro: `[ ${data.gyro ? data.gyro.length : 0} rows of (x,y,z) in deg/s ]`,
+        gps_speed_kmh: data.gps_speed_kmh
+      };
+      document.getElementById('json-viewer').textContent = JSON.stringify(snippet, null, 2);
+
+      // Phase info
+      const phase = data._phase || 'event';
+      const phaseIdx = data._phase_index || 1;
+      const phaseTot = data._phase_total || 16;
+      let phaseLabel = 'Executing Event';
+      if (phase === 'leadin') {
+        phaseLabel = `Lead-In: ${phaseIdx}/${phaseTot}s (Buffering 8s M2 window)`;
+      } else if (phase === 'event') {
+        phaseLabel = `Collision Event: ${phaseIdx}/${phaseTot}s`;
+      } else if (phase === 'postevent') {
+        phaseLabel = `Post-Event: ${phaseIdx}/${phaseTot}s`;
+      }
+      document.getElementById('hud-phase-text').textContent = phaseLabel;
+      document.getElementById('hud-curr-sec').textContent = String(phaseIdx).padStart(2, '0');
+      document.getElementById('hud-total-sec').textContent = String(phaseTot).padStart(2, '0');
+
+      // Append to Tx Log
+      appendTxLog(data, maxG, phase);
+    }
+
+    // Handle Remote ML Model M2 Prediction
+    function onPredictionReceived(pred) {
+      lastPrediction = pred;
+      const panel = document.getElementById('ai-prediction-panel');
+      const idleView = document.getElementById('pred-idle-view');
+      const resultView = document.getElementById('pred-result-view');
+
+      idleView.classList.add('hidden');
+      resultView.classList.remove('hidden');
+
+      const isCrash = (pred.level === 'crash');
+      const pPct = ((pred.p_crash || 0) * 100).toFixed(1);
+
+      const titleEl = document.getElementById('pred-title');
+      const pCrashEl = document.getElementById('pred-p-crash');
+      const badgeIcon = document.getElementById('pred-badge-icon');
+      const modelTag = document.getElementById('pred-model-tag');
+
+      if (isCrash) {
+        panel.className = 'card-panel rounded p-4 crash-alert-active bg-rose-950/20';
+        badgeIcon.className = 'w-10 h-10 rounded bg-rose-500/20 text-rose-400 border border-rose-500/40 flex items-center justify-center text-xl font-bold';
+        badgeIcon.textContent = '🚨';
+        titleEl.textContent = 'CRASH DETECTED — EMERGENCY DISPATCH';
+        titleEl.className = 'text-base font-bold tracking-tight text-rose-400';
+        pCrashEl.className = 'text-2xl font-bold font-mono-num text-rose-400';
+        modelTag.className = 'text-[10px] font-mono-num px-2 py-0.5 rounded uppercase font-semibold bg-rose-500/20 text-rose-300 border border-rose-500/40';
+      } else {
+        panel.className = 'card-panel rounded p-4 border-cyan-500/50 bg-cyan-950/20';
+        badgeIcon.className = 'w-10 h-10 rounded bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 flex items-center justify-center text-xl font-bold';
+        badgeIcon.textContent = '🛡️';
+        titleEl.textContent = 'HIGH-G TRIGGER EVALUATED — NON-CRASH';
+        titleEl.className = 'text-base font-bold tracking-tight text-cyan-300';
+        pCrashEl.className = 'text-2xl font-bold font-mono-num text-cyan-400';
+        modelTag.className = 'text-[10px] font-mono-num px-2 py-0.5 rounded uppercase font-semibold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40';
+      }
+
+      pCrashEl.textContent = `${pPct}%`;
+      document.getElementById('pred-p-lgbm').textContent = pred.p_lgbm !== undefined ? `${(pred.p_lgbm * 100).toFixed(1)}%` : '--';
+      document.getElementById('pred-p-cnn').textContent = pred.p_cnn !== undefined ? `${(pred.p_cnn * 100).toFixed(1)}%` : '--';
+      document.getElementById('pred-latency').textContent = pred.latency_ms !== undefined ? `${pred.latency_ms.toFixed(1)} ms` : '--';
+      document.getElementById('pred-trigger-seq').textContent = `#${pred.trigger_seq || 0}`;
+
+      // Append prominent event in Activity Log
+      appendPredictionLog(pred);
+    }
+
+    function onRemoteErrorReceived(err) {
+      const log = document.getElementById('tx-log');
+      const item = document.createElement('div');
+      item.className = 'p-1.5 rounded bg-rose-950/40 border border-rose-700/50 flex items-center justify-between text-rose-300';
+      item.innerHTML = `
+        <span class="font-bold">REMOTE ERROR [${err.code || 'err'}]</span>
+        <span class="truncate max-w-[200px]">${err.message || ''}</span>
+      `;
+      log.insertBefore(item, log.firstChild);
+    }
+
+    function appendPredictionLog(pred) {
+      const log = document.getElementById('tx-log');
+      const isCrash = (pred.level === 'crash');
+      const item = document.createElement('div');
+      item.className = `p-2 rounded border flex flex-col gap-1 ${
+        isCrash ? 'bg-rose-950/50 border-rose-500 text-rose-200' : 'bg-cyan-950/40 border-cyan-500 text-cyan-200'
+      }`;
+      item.innerHTML = `
+        <div class="flex items-center justify-between font-bold">
+          <span>${isCrash ? '🚨 M2: CRASH PREDICTED' : '🛡️ M2: JOLT / NO CRASH'}</span>
+          <span class="font-mono-num">${((pred.p_crash || 0)*100).toFixed(1)}%</span>
+        </div>
+        <div class="flex items-center justify-between text-[10px] text-slate-300 font-mono-num">
+          <span>Trigger: seq=${pred.trigger_seq}</span>
+          <span>Lat: ${pred.latency_ms ? pred.latency_ms.toFixed(1) : 0}ms</span>
+          <span>dev=${pred.device_id}</span>
+        </div>
+      `;
+      log.insertBefore(item, log.firstChild);
+      const countEl = document.getElementById('tx-count');
+      countEl.textContent = `${parseInt(countEl.textContent || '0') + 1} events`;
+    }
+
+    function appendTxLog(data, maxG, phase) {
+      const log = document.getElementById('tx-log');
+      if (log.children.length === 1 && log.children[0].textContent.includes('Waiting')) {
+        log.innerHTML = '';
+      }
+      const item = document.createElement('div');
+      item.className = 'p-1.5 rounded bg-slate-900 border border-slate-800 flex items-center justify-between';
+
+      let phaseBadge = '<span class="text-slate-400">EVT</span>';
+      if (phase === 'leadin') phaseBadge = '<span class="text-amber-400 font-bold">LEAD</span>';
+      if (phase === 'postevent') phaseBadge = '<span class="text-cyan-400 font-bold">POST</span>';
+
+      item.innerHTML = `
+        <div class="flex items-center gap-1.5">
+          ${phaseBadge}
+          <span class="text-cyan-400 font-bold">#${data.seq}</span>
+        </div>
+        <span class="text-slate-300">${data.gps_speed_kmh || 0} km/h</span>
+        <span class="${maxG > 3 ? 'text-rose-400 font-bold' : (maxG > 1 ? 'text-amber-400' : 'text-slate-400')}">${maxG.toFixed(1)}g</span>
+        <span class="text-emerald-400 text-[10px]">MQTT &rarr; WS</span>
+      `;
+      log.insertBefore(item, log.firstChild);
+      if (log.children.length > 30) {
+        log.removeChild(log.lastChild);
+      }
+      const countEl = document.getElementById('tx-count');
+      countEl.textContent = `${parseInt(countEl.textContent || '0') + 1} events`;
+    }
+
+    // Draw high-resolution multi-trace waveforms on Canvas
+    function drawWaveforms(data) {
+      if (!data || !data.acc || !data.gyro) return;
+
+      const w = canvasAcc.clientWidth;
+      const h = canvasAcc.clientHeight;
+
+      // 1. Draw Accel Canvas
+      ctxAcc.clearRect(0, 0, w, h);
+      drawGrid(ctxAcc, w, h);
+
+      // Acc range: -3.5g to +3.5g
+      const accScale = (val) => {
+        const clamped = Math.max(-3.5, Math.min(3.5, val));
+        return (h / 2) - (clamped / 3.5) * (h / 2 * 0.85);
+      };
+
+      drawTrace(ctxAcc, data.acc.map(r => r[0]), w, accScale, '#f43f5e'); // Ax
+      drawTrace(ctxAcc, data.acc.map(r => r[1]), w, accScale, '#10b981'); // Ay
+      drawTrace(ctxAcc, data.acc.map(r => r[2]), w, accScale, '#3b82f6'); // Az
+
+      // 2. Draw Gyro Canvas
+      ctxGyro.clearRect(0, 0, w, h);
+      drawGrid(ctxGyro, w, h);
+
+      // Gyro range: -150 to +150 deg/s
+      const gyroScale = (val) => {
+        const clamped = Math.max(-150, Math.min(150, val));
+        return (h / 2) - (clamped / 150.0) * (h / 2 * 0.85);
+      };
+
+      drawTrace(ctxGyro, data.gyro.map(r => r[0]), w, gyroScale, '#06b6d4'); // Gx
+      drawTrace(ctxGyro, data.gyro.map(r => r[1]), w, gyroScale, '#a855f7'); // Gy
+      drawTrace(ctxGyro, data.gyro.map(r => r[2]), w, gyroScale, '#f59e0b'); // Gz
+    }
+
+    function drawGrid(ctx, w, h) {
+      ctx.strokeStyle = '#16202c';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      // Center line
+      ctx.moveTo(0, h / 2);
+      ctx.lineTo(w, h / 2);
+      // Vertical markers (every 25%)
+      for (let x = 0.25; x < 1.0; x += 0.25) {
+        ctx.moveTo(w * x, 0);
+        ctx.lineTo(w * x, h);
+      }
+      ctx.stroke();
+    }
+
+    function drawTrace(ctx, values, w, scaleFn, color) {
+      if (!values || values.length === 0) return;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      const stepX = w / (values.length - 1);
+      for (let i = 0; i < values.length; i++) {
+        const x = i * stepX;
+        const y = scaleFn(values[i]);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+
+    function updateScrubber(curr, total, phase, phaseIdx, phaseTot) {
+      const pct = total > 0 ? (curr / total) * 100 : 0;
+      document.getElementById('progress-bar').style.width = `${pct}%`;
+      document.getElementById('scrubber-label').textContent = `${curr}s / ${total}s`;
+    }
+
+    // Backend Player Controls
+    async function startPlayback() {
+      if (!selectedScenario) return;
+      const deviceId = document.getElementById('inp-device').value.trim() || 'blackbox-01';
+      const loop = document.getElementById('chk-loop').checked;
+      const leadIn = document.getElementById('chk-leadin').checked;
+
+      // Reset prediction display to idle on new run
+      resetPredictionView();
+
+      await fetch('/api/player/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scenario: selectedScenario.filename,
+          speed_multiplier: currentSpeedMultiplier,
+          loop: loop,
+          device_id: deviceId,
+          lead_in_normal: leadIn
+        })
+      });
+      syncPlayerStatus();
+    }
+
+    async function pausePlayback() {
+      await fetch('/api/player/pause', { method: 'POST' });
+      syncPlayerStatus();
+    }
+
+    async function resumePlayback() {
+      await fetch('/api/player/resume', { method: 'POST' });
+      syncPlayerStatus();
+    }
+
+    async function stopPlayback() {
+      await fetch('/api/player/stop', { method: 'POST' });
+      resetPredictionView();
+      syncPlayerStatus();
+    }
+
+    async function stepPlayback() {
+      if (!selectedScenario) return;
+      const deviceId = document.getElementById('inp-device').value.trim() || 'blackbox-01';
+      const leadIn = document.getElementById('chk-leadin').checked;
+      await fetch('/api/player/step', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scenario: selectedScenario.filename,
+          device_id: deviceId,
+          lead_in_normal: leadIn
+        })
+      });
+      syncPlayerStatus();
+    }
+
+    function resetPredictionView() {
+      document.getElementById('ai-prediction-panel').className = 'card-panel rounded p-4';
+      document.getElementById('pred-idle-view').classList.remove('hidden');
+      document.getElementById('pred-result-view').classList.add('hidden');
+    }
+
+    async function syncPlayerStatus() {
+      try {
+        const res = await fetch('/api/player/status');
+        const st = await res.json();
+        playerStatus = st;
+
+        const isPlaying = st.is_playing;
+        const isPaused = st.is_paused;
+
+        const btnPlay = document.getElementById('btn-play');
+        const iconPlay = document.getElementById('icon-play');
+        const iconPause = document.getElementById('icon-pause');
+        const textPlay = document.getElementById('text-play');
+
+        if (isPlaying && !isPaused) {
+          iconPlay.classList.add('hidden');
+          iconPause.classList.remove('hidden');
+          textPlay.textContent = 'Pause';
+          btnPlay.onclick = pausePlayback;
+          document.getElementById('scrubber-status').textContent = 'Streaming Live...';
+        } else if (isPlaying && isPaused) {
+          iconPlay.classList.remove('hidden');
+          iconPause.classList.add('hidden');
+          textPlay.textContent = 'Resume';
+          btnPlay.onclick = resumePlayback;
+          document.getElementById('scrubber-status').textContent = 'Paused';
+        } else {
+          iconPlay.classList.remove('hidden');
+          iconPause.classList.add('hidden');
+          textPlay.textContent = 'Send Scenario';
+          btnPlay.onclick = startPlayback;
+          document.getElementById('scrubber-status').textContent = 'Standby';
+        }
+
+        updateScrubber(st.current_index, st.total_steps || 16, st.phase, st.phase_index, st.phase_total);
+      } catch (e) {
+        console.error('Failed to sync player:', e);
+      }
+    }
+
+    // System Status Poll (MQTT, WS, MongoDB)
+    async function syncSystemStatus() {
+      try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+
+        // MQTT
+        const mqttDot = document.getElementById('badge-mqtt-dot');
+        const mqttText = document.getElementById('badge-mqtt-text');
+        if (data.mqtt && data.mqtt.connected) {
+          mqttDot.className = 'w-2 h-2 rounded-full bg-emerald-500';
+          mqttText.textContent = 'Online';
+          mqttText.className = 'font-mono-num font-medium text-emerald-400';
+        } else {
+          mqttDot.className = 'w-2 h-2 rounded-full bg-amber-500';
+          mqttText.textContent = 'Disconnected';
+          mqttText.className = 'font-mono-num font-medium text-amber-400';
+        }
+
+        // Remote WS (Zino)
+        const wsDot = document.getElementById('badge-ws-dot');
+        const wsText = document.getElementById('badge-ws-text');
+        if (data.remote_websocket && data.remote_websocket.connected) {
+          wsDot.className = 'w-2 h-2 rounded-full bg-emerald-500 animate-pulse';
+          wsText.textContent = 'Relay Active';
+          wsText.className = 'font-mono-num font-medium text-emerald-400';
+        } else {
+          wsDot.className = 'w-2 h-2 rounded-full bg-amber-500';
+          wsText.textContent = 'Connecting...';
+          wsText.className = 'font-mono-num font-medium text-amber-400';
+        }
+
+        // MongoDB
+        const mongoCount = document.getElementById('badge-mongo-count');
+        if (data.mongodb) {
+          mongoCount.textContent = `${data.mongodb.total_stored_batches || 0} batches`;
+        }
+
+        // Box Hardware Health
+        try {
+          const hwRes = await fetch('/box/health');
+          const hw = await hwRes.json();
+          const hwDot = document.getElementById('badge-hw-dot');
+          const hwText = document.getElementById('badge-hw-text');
+          if (hwDot && hwText) {
+            if (hw.status === 'HEALTHY') {
+              hwDot.className = 'w-2 h-2 rounded-full bg-emerald-500';
+              hwText.textContent = `HEALTHY (${hw.hardware.system.cpu_temperature_c}°C)`;
+              hwText.className = 'font-mono-num font-medium text-emerald-400';
+            } else {
+              hwDot.className = 'w-2 h-2 rounded-full bg-amber-500';
+              hwText.textContent = hw.status;
+              hwText.className = 'font-mono-num font-medium text-amber-400';
+            }
+          }
+        } catch (e) {}
+
+        // Fallback Status Sync
+        syncFallbackStatus();
+      } catch (e) {}
+    }
+
+    // --- Emergency Uplink Ladder Logic (GSM SMS & LoRaWAN) ---
+    let fallbackConfig = {
+      internet_enabled: true,
+      gsm_enabled: true,
+      lorawan_enabled: true,
+      active_tier: 'TIER_1_INTERNET'
+    };
+    let fallbackCount = 0;
+
+    async function syncFallbackStatus() {
+      try {
+        const res = await fetch('/api/fallback/status');
+        const data = await res.json();
+        updateFallbackUi(data);
+      } catch (e) {}
+    }
+
+    function updateFallbackUi(data) {
+      if (!data || !data.config) return;
+      fallbackConfig = data.config;
+      const activeTier = data.active_tier || 'TIER_1_INTERNET';
+
+      // 1. Header Uplink Badge
+      const badgeDot = document.getElementById('badge-uplink-dot');
+      const badgeText = document.getElementById('badge-uplink-text');
+      const tierBadge = document.getElementById('deck-tier-badge');
+
+      if (activeTier === 'TIER_1_INTERNET') {
+        badgeDot.className = 'w-2 h-2 rounded-full bg-emerald-500 animate-pulse';
+        badgeText.textContent = '4G / Internet';
+        badgeText.className = 'font-mono-num font-medium text-emerald-400';
+        tierBadge.textContent = 'TIER 1 · 4G INTERNET';
+        tierBadge.className = 'text-[9px] font-mono-num font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+      } else if (activeTier === 'TIER_2_GSM_SMS') {
+        badgeDot.className = 'w-2 h-2 rounded-full bg-amber-500 animate-pulse';
+        badgeText.textContent = 'GSM 2G SMS (FALLBACK)';
+        badgeText.className = 'font-mono-num font-medium text-amber-400';
+        tierBadge.textContent = 'TIER 2 · GSM 2G SMS ACTIVE';
+        tierBadge.className = 'text-[9px] font-mono-num font-bold px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse';
+      } else if (activeTier === 'TIER_3_LORAWAN') {
+        badgeDot.className = 'w-2 h-2 rounded-full bg-purple-500 animate-pulse';
+        badgeText.textContent = 'LoRaWAN 868MHz (LPWAN)';
+        badgeText.className = 'font-mono-num font-medium text-purple-400';
+        tierBadge.textContent = 'TIER 3 · LoRaWAN 868MHz ACTIVE';
+        tierBadge.className = 'text-[9px] font-mono-num font-bold px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 animate-pulse';
+      } else {
+        badgeDot.className = 'w-2 h-2 rounded-full bg-rose-500';
+        badgeText.textContent = 'OFFLINE (NO UPLINK)';
+        badgeText.className = 'font-mono-num font-medium text-rose-400';
+        tierBadge.textContent = 'OFFLINE';
+        tierBadge.className = 'text-[9px] font-mono-num font-bold px-2 py-0.5 rounded bg-rose-500/20 text-rose-400 border border-rose-500/30';
+      }
+
+      // 2. Channel Switch Buttons
+      const btnInt = document.getElementById('toggle-net-internet');
+      const stInt = document.getElementById('status-internet');
+      if (fallbackConfig.internet_enabled) {
+        btnInt.className = 'p-2 rounded border border-emerald-500/50 bg-emerald-950/20 text-emerald-300 text-left transition-all';
+        stInt.textContent = 'ON';
+        stInt.className = 'text-[10px] text-emerald-400';
+      } else {
+        btnInt.className = 'p-2 rounded border border-rose-900 bg-rose-950/20 text-rose-300 text-left transition-all';
+        stInt.textContent = 'CUT';
+        stInt.className = 'text-[10px] text-rose-400 font-bold';
+      }
+
+      const btnGsm = document.getElementById('toggle-net-gsm');
+      const stGsm = document.getElementById('status-gsm');
+      if (fallbackConfig.gsm_enabled) {
+        if (!fallbackConfig.internet_enabled) {
+          btnGsm.className = 'p-2 rounded border border-amber-500 bg-amber-950/30 text-amber-200 text-left transition-all animate-pulse';
+          stGsm.textContent = 'ACTIVE';
+          stGsm.className = 'text-[10px] text-amber-300 font-bold';
+        } else {
+          btnGsm.className = 'p-2 rounded border border-slate-700 bg-slate-900/60 text-slate-300 text-left transition-all';
+          stGsm.textContent = 'READY';
+          stGsm.className = 'text-[10px] text-amber-400';
+        }
+      } else {
+        btnGsm.className = 'p-2 rounded border border-slate-800 bg-slate-950/40 text-slate-500 text-left transition-all';
+        stGsm.textContent = 'CUT';
+        stGsm.className = 'text-[10px] text-slate-500';
+      }
+
+      const btnLora = document.getElementById('toggle-net-lora');
+      const stLora = document.getElementById('status-lora');
+      if (fallbackConfig.lorawan_enabled) {
+        if (!fallbackConfig.internet_enabled && !fallbackConfig.gsm_enabled) {
+          btnLora.className = 'p-2 rounded border border-purple-500 bg-purple-950/30 text-purple-200 text-left transition-all animate-pulse';
+          stLora.textContent = 'ACTIVE';
+          stLora.className = 'text-[10px] text-purple-300 font-bold';
+        } else {
+          btnLora.className = 'p-2 rounded border border-slate-700 bg-slate-900/60 text-slate-300 text-left transition-all';
+          stLora.textContent = 'READY';
+          stLora.className = 'text-[10px] text-purple-400';
+        }
+      } else {
+        btnLora.className = 'p-2 rounded border border-slate-800 bg-slate-950/40 text-slate-500 text-left transition-all';
+        stLora.textContent = 'CUT';
+        stLora.className = 'text-[10px] text-slate-500';
+      }
+    }
+
+    async function simulateNetwork(internet, gsm, lora) {
+      await fetch('/api/fallback/simulate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          internet_enabled: internet,
+          gsm_enabled: gsm,
+          lorawan_enabled: lora
+        })
+      });
+      syncFallbackStatus();
+    }
+
+    function onNetworkStateChanged(data) {
+      updateFallbackUi(data);
+    }
+
+    function onFallbackEventReceived(event) {
+      fallbackCount++;
+      document.getElementById('fallback-badge-count').textContent = fallbackCount;
+      appendFallbackCard(event);
+    }
+
+    function onInboundSmsReceived(event) {
+      fallbackCount++;
+      document.getElementById('fallback-badge-count').textContent = fallbackCount;
+      appendInboundSmsCard(event);
+    }
+
+    function onInboundLorawanReceived(event) {
+      fallbackCount++;
+      document.getElementById('fallback-badge-count').textContent = fallbackCount;
+      appendInboundLorawanCard(event);
+    }
+
+    function appendFallbackCard(event) {
+      const container = document.getElementById('fallback-feed-view');
+      if (container.children.length === 1 && container.children[0].textContent.includes('Waiting for')) {
+        container.innerHTML = '';
+      }
+
+      const card = document.createElement('div');
+      const isSms = (event.channel === 'GSM_2G_SMS');
+      const borderClass = isSms ? 'border-amber-500/50 bg-amber-950/20' : 'border-purple-500/50 bg-purple-950/20';
+      const badgeClass = isSms ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' : 'bg-purple-500/20 text-purple-300 border-purple-500/40';
+      const title = isSms ? 'GSM 2G SMS eCall MSD' : 'LoRaWAN 868MHz Uplink';
+
+      card.className = `p-2.5 rounded border ${borderClass} text-slate-200 text-xs font-mono-num flex flex-col gap-1.5`;
+
+      if (isSms) {
+        card.innerHTML = `
+          <div class="flex items-center justify-between">
+            <span class="px-1.5 py-0.5 rounded text-[9px] uppercase font-bold border ${badgeClass}">${title}</span>
+            <span class="text-[10px] text-slate-400">${event.timestamp ? event.timestamp.split('T')[1].split('+')[0] : ''}</span>
+          </div>
+          <div class="p-1.5 bg-black/40 rounded border border-slate-800 text-amber-200 text-[11px] select-all break-all">
+            ${event.sms_body}
+          </div>
+          <div class="flex items-center justify-between text-[10px] text-slate-400">
+            <span>To: <strong class="text-white">${event.recipient_msisdn}</strong></span>
+            <span>Length: <strong>${event.character_count} chars</strong></span>
+            <span class="text-emerald-400 font-semibold">DELIVERED</span>
+          </div>
+        `;
+      } else {
+        card.innerHTML = `
+          <div class="flex items-center justify-between">
+            <span class="px-1.5 py-0.5 rounded text-[9px] uppercase font-bold border ${badgeClass}">${title}</span>
+            <span class="text-[10px] text-slate-400">${event.timestamp ? event.timestamp.split('T')[1].split('+')[0] : ''}</span>
+          </div>
+          <div class="p-1.5 bg-black/40 rounded border border-slate-800 text-purple-200 text-[11px] select-all break-all">
+            Hex: <span class="text-white font-bold">${event.hex_payload}</span>
+            <span class="block text-slate-400 text-[10px] mt-0.5">Base64: ${event.base64_payload}</span>
+          </div>
+          <div class="flex items-center justify-between text-[10px] text-slate-400">
+            <span>GW: <strong class="text-white">${event.gateway_eui ? event.gateway_eui.slice(-8) : ''}</strong></span>
+            <span>SF7 / 125kHz</span>
+            <span class="text-purple-300 font-semibold">RSSI: -108 dBm</span>
+          </div>
+        `;
+      }
+
+      container.insertBefore(card, container.firstChild);
+      if (container.children.length > 25) {
+        container.removeChild(container.lastChild);
+      }
+
+      appendTxLogFallback(event);
+    }
+
+    function appendInboundSmsCard(event) {
+      const container = document.getElementById('fallback-feed-view');
+      if (container.children.length === 1 && container.children[0].textContent.includes('Waiting for')) {
+        container.innerHTML = '';
+      }
+      const card = document.createElement('div');
+      card.className = 'p-2.5 rounded border border-cyan-500/50 bg-cyan-950/20 text-slate-200 text-xs font-mono-num flex flex-col gap-1.5';
+      card.innerHTML = `
+        <div class="flex items-center justify-between">
+          <span class="px-1.5 py-0.5 rounded text-[9px] uppercase font-bold border bg-cyan-500/20 text-cyan-300 border-cyan-500/40">INBOUND SMS (GATEWAY)</span>
+          <span class="text-[10px] text-slate-400">${event.received_at ? event.received_at.split('T')[1].split('+')[0] : ''}</span>
+        </div>
+        <div class="p-1.5 bg-black/40 rounded border border-slate-800 text-cyan-200 text-[11px] select-all break-all">
+          ${event.body}
+        </div>
+        <div class="flex items-center justify-between text-[10px] text-slate-400">
+          <span>From: <strong class="text-white">${event.sender}</strong></span>
+          <span class="text-emerald-400 font-semibold">PARSED & STORED</span>
+        </div>
+      `;
+      container.insertBefore(card, container.firstChild);
+    }
+
+    function appendInboundLorawanCard(event) {
+      const container = document.getElementById('fallback-feed-view');
+      if (container.children.length === 1 && container.children[0].textContent.includes('Waiting for')) {
+        container.innerHTML = '';
+      }
+      const card = document.createElement('div');
+      card.className = 'p-2.5 rounded border border-purple-500/50 bg-purple-950/20 text-slate-200 text-xs font-mono-num flex flex-col gap-1.5';
+      card.innerHTML = `
+        <div class="flex items-center justify-between">
+          <span class="px-1.5 py-0.5 rounded text-[9px] uppercase font-bold border bg-purple-500/20 text-purple-300 border-purple-500/40">INBOUND LORAWAN RSU DECODED</span>
+          <span class="text-[10px] text-slate-400">${event.received_at ? event.received_at.split('T')[1].split('+')[0] : ''}</span>
+        </div>
+        <div class="p-1.5 bg-black/40 rounded border border-slate-800 text-purple-200 text-[11px]">
+          Event: <strong class="text-white">${event.decoded ? event.decoded.event_type : 'TELEMETRY'}</strong> |
+          Lat: <strong class="text-white">${event.decoded && event.decoded.location ? event.decoded.location.lat : '--'}</strong>,
+          Lon: <strong class="text-white">${event.decoded && event.decoded.location ? event.decoded.location.lon : '--'}</strong> |
+          Peak G: <strong class="text-amber-400">${event.decoded ? event.decoded.peak_g : '--'}g</strong>
+        </div>
+        <div class="flex items-center justify-between text-[10px] text-slate-400">
+          <span>DevEUI: <strong class="text-white">${event.dev_eui}</strong></span>
+          <span class="text-purple-300">RSSI: ${event.rssi} dBm</span>
+        </div>
+      `;
+      container.insertBefore(card, container.firstChild);
+    }
+
+    function appendTxLogFallback(event) {
+      const log = document.getElementById('tx-log');
+      const item = document.createElement('div');
+      const isSms = (event.channel === 'GSM_2G_SMS');
+      item.className = `p-1.5 rounded border flex items-center justify-between ${
+        isSms ? 'bg-amber-950/30 border-amber-800/60 text-amber-300' : 'bg-purple-950/30 border-purple-800/60 text-purple-300'
+      }`;
+      item.innerHTML = `
+        <span class="font-bold">${isSms ? '📱 2G SMS FALLBACK' : '📡 LoRaWAN 868MHz'}</span>
+        <span class="truncate max-w-[170px] text-slate-300">${isSms ? event.sms_body : 'Hex: ' + event.hex_payload}</span>
+        <span class="text-emerald-400 font-semibold text-[10px]">SENT</span>
+      `;
+      log.insertBefore(item, log.firstChild);
+      const countEl = document.getElementById('tx-count');
+      countEl.textContent = `${parseInt(countEl.textContent || '0') + 1} events`;
+    }
+
+    // Tabs logic
+    const tabBtnWire = document.getElementById('tab-btn-wire');
+    const tabBtnFallback = document.getElementById('tab-btn-fallback');
+    const jsonViewer = document.getElementById('json-viewer');
+    const fallbackFeedView = document.getElementById('fallback-feed-view');
+
+    tabBtnWire.onclick = () => {
+      tabBtnWire.className = 'px-2.5 py-1 rounded bg-slate-800 text-amber-400 font-semibold border border-slate-700';
+      tabBtnFallback.className = 'px-2.5 py-1 rounded text-slate-400 hover:text-white border border-transparent';
+      jsonViewer.classList.remove('hidden');
+      fallbackFeedView.classList.add('hidden');
+    };
+
+    tabBtnFallback.onclick = () => {
+      tabBtnFallback.className = 'px-2.5 py-1 rounded bg-slate-800 text-amber-400 font-semibold border border-slate-700';
+      tabBtnWire.className = 'px-2.5 py-1 rounded text-slate-400 hover:text-white border border-transparent';
+      fallbackFeedView.classList.remove('hidden');
+      jsonViewer.classList.add('hidden');
+    };
+
+    // Simulation Button Listeners
+    document.getElementById('toggle-net-internet').onclick = () => {
+      simulateNetwork(!fallbackConfig.internet_enabled, fallbackConfig.gsm_enabled, fallbackConfig.lorawan_enabled);
+    };
+
+    document.getElementById('toggle-net-gsm').onclick = () => {
+      simulateNetwork(fallbackConfig.internet_enabled, !fallbackConfig.gsm_enabled, fallbackConfig.lorawan_enabled);
+    };
+
+    document.getElementById('toggle-net-lora').onclick = () => {
+      simulateNetwork(fallbackConfig.internet_enabled, fallbackConfig.gsm_enabled, !fallbackConfig.lorawan_enabled);
+    };
+
+    document.getElementById('sim-btn-cut-internet').onclick = () => {
+      simulateNetwork(false, true, true);
+      // Auto switch to fallback tab so user sees the SMS arrive
+      tabBtnFallback.click();
+    };
+
+    document.getElementById('sim-btn-cut-cellular').onclick = () => {
+      simulateNetwork(false, false, true);
+      tabBtnFallback.click();
+    };
+
+    document.getElementById('sim-btn-restore').onclick = () => {
+      simulateNetwork(true, true, true);
+    };
+
+    document.getElementById('btn-manual-sms').onclick = async () => {
+      tabBtnFallback.click();
+      await fetch('/api/fallback/sms/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ device_id: document.getElementById('inp-device').value || 'blackbox-01' })
+      });
+    };
+
+    document.getElementById('btn-manual-lora').onclick = async () => {
+      tabBtnFallback.click();
+      await fetch('/api/fallback/lorawan/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ msg_type: 'CRASH', device_id: document.getElementById('inp-device').value || 'blackbox-01' })
+      });
+    };
+      } catch (e) {}
+    }
+
+    // Event Listeners
+    document.getElementById('btn-stop').onclick = stopPlayback;
+    document.getElementById('btn-step').onclick = stepPlayback;
+
+    document.querySelectorAll('.btn-speed').forEach(btn => {
+      btn.onclick = () => {
+        document.querySelectorAll('.btn-speed').forEach(b => {
+          b.className = 'px-2 py-1 rounded text-slate-300 hover:text-white btn-speed';
+        });
+        btn.className = 'px-2 py-1 rounded bg-amber-500/20 text-amber-400 font-semibold btn-speed';
+        currentSpeedMultiplier = parseFloat(btn.dataset.speed);
+      };
+    });
+
+    document.getElementById('btn-copy-json').onclick = () => {
+      const text = document.getElementById('json-viewer').textContent;
+      navigator.clipboard.writeText(text);
+      document.getElementById('btn-copy-json').textContent = 'Copied!';
+      setTimeout(() => document.getElementById('btn-copy-json').textContent = 'Copy', 1500);
+    };
+
+    // Init
+    window.onload = () => {
+      resizeCanvases();
+      loadScenarios();
+      connectLocalWebSocket();
+      syncSystemStatus();
+      syncPlayerStatus();
+      syncFallbackStatus();
+
+      setInterval(syncSystemStatus, 3000);
+      setInterval(syncPlayerStatus, 1000);
+    };
+  </script>
+</body>
+</html>

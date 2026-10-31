@@ -1,0 +1,28 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments
+.env
+.env.*
+!.env.example
+env/
+venv/
+.venv/
+ENV/
+
+# PlatformIO & Embedded
+.pio/
+.vscode/
+*.bin
+*.hex
+*.elf
+
+# Operating System & IDEs
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+*~
